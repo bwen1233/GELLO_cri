@@ -1,125 +1,102 @@
-# GELLO_simple
+# GELLO_cri
 
-Based on [gello_software](https://github.com/wuphilipp/gello_software), a minimal wrapper for using a
-GELLO leader arm to teleoperate a UR robot directly over `ur_rtde` — no ZMQ
-server/client split, no camera nodes, one script, one process.
-
-## Structure
+GELLO leader-arm teleoperation for robots driven through CRI (Common Robot Interface).
 
 ```
-GELLO_simple/
-├── check_alignment.py   # read-only diagnostic: prints GELLO vs UR joint offset, no motion
-├── ur10_tele.py          # standalone GELLO -> UR teleop loop (RTDE servoJ)
-├── urdf/
-│   └── ur5.urdf           # generic UR5 URDF (generated from ROS Humble's ur_description via xacro)
-└── gello_software/       # vendored copy of gello_software (flattened, no submodules)
-    └── gello/             # the `gello` package (GelloAgent, Dynamixel driver, robot interfaces...)
+gello   ──►  communication  ──►  robot
+(GELLO)      (read & stream)     (safety → installed cri package)
 ```
 
-`gello_software` here is a **flattened copy**, not a git submodule — it won't
-auto-update from upstream. `third_party/` (DynamixelSDK, mujoco_menagerie)
-was dropped: DynamixelSDK now comes from PyPI (`dynamixel-sdk` in
-`requirements.txt`), and mujoco_menagerie (MuJoCo sim assets) isn't needed
-since this repo only targets real UR hardware.
+## Layout
 
-`urdf/ur5.urdf` uses generic/default UR5 kinematic parameters (not
-calibrated to any specific physical robot's factory offsets) — good enough
-for the Jacobian/TCP-twist computation these scripts do, but if you need
-robot-accurate forward kinematics, regenerate it with your UR's actual
-kinematics calibration (see `ur_description`'s docs on extracting
-`kinematics_parameters_file` from the controller).
+```
+GELLO_cri/
+├── config.py                 # ALL configuration (Python registry, like gello's PORT_CONFIG_MAP)
+│                             #   GELLO_CONFIG_MAP  name   -> U2D2 serial, joint ids / signs / offsets / gripper
+│                             #   ROBOT_CONFIG_MAP  type   -> CRI controller, IP, limits, home, safety
+│                             #   TELEOP_CONFIG_MAP type   -> which GELLO drives it, rate, gripper on/off
+├── run.py                    # teleop: python run.py --robot ur10
+├── check_alignment.py        # external safety check, no motion: GELLO vs robot joint difference
+├── gello/                    # GELLO LAYER: leader-arm device code
+│   ├── gello.py              # GELLO: auto-detect by U2D2 serial, Dynamixel -> joints in robot convention
+│   ├── dxl_tool.py           # scan bus, set servo IDs, watch live positions
+│   ├── drivers/dynamixel.py  # Dynamixel servo driver
+│   ├── calibrate.py          # find joint offsets for a GELLO
+├── communication/
+│   └── bridge.py             # LeaderArmBridge: read leader -> command robot at rate_hz
+├── robot/                    # ROBOT LAYER
+│   ├── robot.py              # robot type -> CRI SyncRobot, rad <-> deg, startup safety
+│   └── common_robot_interface/  # CRI, git submodule (bwen1233/common_robot_interface)
+└── urdf/ur5.urdf             # reference only (kinematics come from CRI)
+```
+
+`gello` and `robot` never import each other; `config.py` is the only shared module.
 
 ## Install
 
-**Option A — venv/uv:**
 ```bash
-git clone git@github.com:bwen1233/GELLO_simple.git
-cd GELLO_simple
-
-uv venv --python 3.11
-source .venv/bin/activate
-uv pip install -r gello_software/requirements.txt
-uv pip install -e gello_software
+git clone --recurse-submodules <this repo>      # or, in an existing clone: git submodule update --init
+conda create -n gello_cri python=3.11
+conda activate gello_cri
+pip install -r requirements.txt
+pip install -e robot/common_robot_interface      # optional: robot/robot.py already imports the submodule directly
 ```
 
-**Option B — conda:**
-```bash
-git clone git@github.com:bwen1233/GELLO_simple.git
-cd GELLO_simple
+CRI is the git submodule `robot/common_robot_interface`; `robot/robot.py` puts it first on the import path,
+so that copy is used even if another CRI is installed. Change CRI there, commit and push it in the
+submodule, then commit the new submodule pointer in this repo.
 
-conda create -n gello python=3.11
-conda activate gello
-pip install -r gello_software/requirements.txt
-pip install -e gello_software
-```
-(Most of these deps — `ur-rtde`, `pyrealsense2`, `xarm-python-sdk`, etc. —
-aren't reliably on conda-forge, so conda here is just used for the Python
-interpreter/env; installs still go through `pip`.)
+## Use
 
-**Serial port permissions** (needed to talk to the GELLO's U2D2/FTDI adapter):
-```bash
-sudo usermod -aG dialout $USER
-# log out/in or reboot for this to take effect
-```
+The connected GELLO is found automatically: each `GELLO_CONFIG_MAP` entry has its U2D2's USB `serial`,
+and the one plugged in is picked. With several plugged in, choose with `--leader <name>` (e.g. `--leader ur`).
 
-## Hardware setup
+1. **Calibrate the GELLO** (once per unit; only the GELLO is connected). Set its reference pose (degrees) in
+   `CALIB_POSE_MAP` at the top of `gello/calibrate.py`, then run:
+   ```bash
+   python gello/calibrate.py
+   ```
+   It asks you to press SPACE three times: GELLO in the reference pose, gripper fully open, gripper fully
+   closed. It then prints `joint_offsets`, `joint_signs` and `gripper` and asks `[y/N]`: press `y` to write
+   them into that GELLO's entry (e.g. `GELLO_CONFIG_MAP["ur"]`) in `config.py`, or paste them by hand.
 
-**1. Calibrate the GELLO leader arm.** This is a separate, required step —
-don't skip straight to the alignment check. Set the GELLO and the UR to a
-matching known pose, then run:
-```bash
-python gello_software/scripts/gello_get_offset.py \
-    --start-joints 0 -1.57 1.57 -1.57 -1.57 0 \
-    --joint-signs 1 1 -1 1 1 1 \
-    --port /dev/serial/by-id/<your-GELLO-device>
-```
-Add the printed offsets to `PORT_CONFIG_MAP` in
-`gello_software/gello/agents/gello_agent.py`, keyed by that same
-`/dev/serial/by-id/...` path. (This repo already ships an entry for the
-GELLO unit it was built with — if you're plugging that *exact* physical
-device into a new machine it should resolve to the same `by-id` path and
-you can skip re-calibrating. Any other GELLO unit needs its own entry.)
+   Each side can also be run on its own (no bridge, so nothing flows between them):
+   ```bash
+   python gello/gello.py                     # read GELLO, print joints (input only)
+   python robot/robot.py --robot ur10        # activate robot, print joints (no input, no motion)
+   ```
 
-**2. Network.** The UR controller must be reachable from the machine running
-these scripts (same LAN/subnet), and the UR must be in **Remote Control**
-mode.
+2. **Safety check, no motion** (not run automatically; run it yourself before teleop):
+   ```bash
+   python check_alignment.py --robot ur10
+   ```
 
-## Usage
+3. **Teleoperate:**
+   ```bash
+   python run.py --robot ur10 --print
+   ```
+   Type `START` to enable motion. Ctrl-C stops.
 
-**1. Alignment check (no motion) — run after calibrating, before any motion:**
-```bash
-python check_alignment.py
-```
-This only cross-checks the GELLO reading against whatever offsets are
-currently in `PORT_CONFIG_MAP` — it verifies the calibration from step 1
-above, it doesn't produce it. Move the GELLO leader through its range and
-confirm the printed joint differences look sane (no ~180°/360° offset, no
-axis with a flipped sign).
+Every command goes through `robot.robot.CriArm.command_joints`: it eases in from the robot's pose over
+`blend_seconds`, limits joint speed to `max_dq_deg_s`, and clips to the joint limits.
 
-**2. Teleoperation:**
-```bash
-python ur10_tele.py \
-    --ur-ip <UR controller IP> \
-    --urdf urdf/ur5.urdf
-```
-You'll be prompted to type `START` before motion is enabled — make sure the
-workspace is clear and the E-stop is within reach first.
+Testing the GELLO alone (no robot): `python gello/gello.py`.
 
-Key flags (see `python ur10_tele.py --help` for the full list):
-- `--urdf` / `--ee-frame` — robot URDF and end-effector frame used to compute
-  the Jacobian/TCP twist.
-- `--joint-reorder` / `--joint-sign` / `--joint-bias` — optional leader→robot
-  joint remapping, in case GELLO and UR joint order/direction don't match.
-- `--max-dq` — per-joint velocity clamp (rad/s), conservative by default.
-- `--rate`, `--lookahead`, `--gain`, `--blend-seconds` — `servoJ` timing
-  parameters; start conservative on a new setup.
+## Adding things
 
-Stop with `Ctrl-C` — the script calls `servoStop()`/`stopScript()` on exit.
+- **New GELLO:** give it its own U2D2, add an entry to `GELLO_CONFIG_MAP` under a readable name with
+  `serial=` set to that U2D2's USB serial (shown by `python gello/gello.py` when nothing matches), then
+  point the robot's `TELEOP_CONFIG_MAP` entry at that name.
+- **New robot type:** add entries to `ROBOT_CONFIG_MAP` (CRI controller name, e.g. `"ur"`, + args) and
+  `TELEOP_CONFIG_MAP` (which GELLO drives it).
+- **Gripper:** implement it in CRI, set `gripper_method` in `ROBOT_CONFIG_MAP` and
+  `use_gripper=True` in `TELEOP_CONFIG_MAP`.
 
-## Known limitations
+## Notes
 
-- GELLO's 7th value (gripper/trigger) is read but discarded — no gripper
-  teleop yet, joint teleop only.
-- Single-arm only (no bimanual support carried over from upstream).
-- No camera integration — if you need synchronized vision data for data
-  collection, that's not wired up here.
+- `robot.py` streams joints via `stream_method` (default `servo_joints`) on the CRI
+  controller. CRI's UR controller does not have it yet; until it is added, `robot.py` falls
+  back to the blocking `SyncRobot.move_joints` with a warning.
+- GELLO driver and calibration code come from
+  [gello_software](https://github.com/wuphilipp/gello_software); the full upstream copy was
+  removed and is still in this repo's git history.

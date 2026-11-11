@@ -1,0 +1,3 @@
+[submodule "robot/common_robot_interface"]
+	path = robot/common_robot_interface
+	url = https://github.com/bwen1233/common_robot_interface.git

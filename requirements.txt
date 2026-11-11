@@ -1,0 +1,5 @@
+numpy
+dynamixel-sdk      # GELLO servos
+pyserial           # leader port auto-detection
+transforms3d       # CRI (git submodule in robot/common_robot_interface, used directly)
+ipdb               # imported by cri/robot.py

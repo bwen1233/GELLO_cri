@@ -1,67 +1,45 @@
-import numpy as np
+
+
+import argparse
 import time
-from typing import Optional, Sequence
-from rtde_receive import RTDEReceiveInterface as RTDEReceive
-from gello.agents.gello_agent import GelloAgent
 
-DEFAULT_UR_IP = "192.168.1.141"
+import numpy as np
 
-DEFAULT_GELLO_PORT = "/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FT8J0WR4-if00-port0"
+from run import build
 
 
+def report(q_leader: np.ndarray, q_robot: np.ndarray, max_diff_deg: float) -> str:
+    d = np.rad2deg(q_leader - q_robot)
+    worst = float(np.max(np.abs(d)))
+    flag = "OK " if worst <= max_diff_deg else "FAR"
+    return (
+        f"[{flag}] diff(deg) = "
+        + " ".join(f"{x:+6.1f}" for x in d)
+        + f" | max={worst:5.1f}  rms={np.sqrt(np.mean(d ** 2)):5.1f}"
+    )
 
-def alignment_check(
-    gello: GelloAgent,
-    rtde_r: RTDEReceive,
-    leader_idx: Sequence[int] = (0, 1, 2, 3, 4, 5),
-    hz: float = 5.0,
-) -> None:
-    """
-    Prints UR vs GELLO joint difference continuously (degrees), without sending any command.
-    Exit with Ctrl-C.
-    """
-    period = 1.0 / float(hz)
-    print("\nAlignment check (no motion). Ctrl-C to exit this check.\n")
-    print("Format: dq(deg) = (GELLO - UR) for joints 0..5; also prints max/rms.\n")
 
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--robot", required=True, help="Robot type, key in config.TELEOP_CONFIG_MAP")
+    ap.add_argument("--leader-port", default=None, help="Override GELLO serial port (e.g. COM5)")
+    ap.add_argument("--max-diff", type=float, default=45.0, help="Flag as FAR above this (deg)")
+    ap.add_argument("--hz", type=float, default=5.0, help="Print rate")
+    args = ap.parse_args()
+
+    _, leader, arm = build(args.robot, args.leader_port)
+    print("\nAlignment check (no motion). Ctrl-C to exit.\n")
     try:
         while True:
-            q_ur = np.array(rtde_r.getActualQ(), dtype=float)  # (6,)
-
-            q_all = np.array(gello.act(obs={}), dtype=float)
-            if q_all.shape[0] < 6:
-                raise RuntimeError(f"GELLO returned too few values: shape={q_all.shape}")
-
-            q_g = q_all[list(leader_idx)]  # pick first 6 (or any mapping you set)
-
-            # dq = q_g - q_ur
-            dq = q_g
-            dq_deg = dq * 180.0 / np.pi
-
-            max_abs_deg = float(np.max(np.abs(dq_deg)))
-            rms_deg = float(np.sqrt(np.mean(dq_deg**2)))
-
-            msg = (
-                "dq(deg)="
-                + " ".join([f"{d:+6.1f}" for d in dq_deg])
-                + f" | max={max_abs_deg:5.1f}  rms={rms_deg:5.1f}"
-            )
-
-            print("\r" + msg, end="", flush=True)
-            time.sleep(period)
-
+            line = report(leader.read().q, arm.get_joints(), args.max_diff)
+            print("\r" + line, end="", flush=True)
+            time.sleep(1.0 / args.hz)
     except KeyboardInterrupt:
-        print("\n\nAlignment check finished.\n")
+        print("\n")
+    finally:
+        arm.close()
+        leader.close()
 
-
-
-
-def main():
-    gello = GelloAgent(port=DEFAULT_GELLO_PORT)
-    rtde_r = RTDEReceive(DEFAULT_UR_IP)
-
-
-    alignment_check(gello, rtde_r, leader_idx=(0, 1, 2, 3, 4, 5), hz=5.0)
 
 if __name__ == "__main__":
     main()
