@@ -40,8 +40,9 @@ class CriArm:
         self._gripper = getattr(self._controller, cfg.gripper_method) if cfg.gripper_method else None
 
         # safety
-        self._lo = np.deg2rad(cfg.joint_lower_deg)
-        self._hi = np.deg2rad(cfg.joint_upper_deg)
+        # joint limits are optional: None = no software clipping
+        self._lo = None if cfg.joint_lower_deg is None else np.deg2rad(cfg.joint_lower_deg)
+        self._hi = None if cfg.joint_upper_deg is None else np.deg2rad(cfg.joint_upper_deg)
         self._max_dq = np.deg2rad(cfg.max_dq_deg_s)
         self._blend = cfg.blend_seconds
         self._q_start = None   # robot pose at first command
@@ -79,8 +80,8 @@ class CriArm:
         step = np.clip(q_target - self._q_cmd, -self._max_dq * dt, self._max_dq * dt)
         q = self._q_cmd + step
 
-        # joint limits
-        q_safe = np.clip(q, self._lo, self._hi)
+        # joint limits (skipped when the config has none)
+        q_safe = q if self._lo is None else np.clip(q, self._lo, self._hi)
         if not self._warned and not np.allclose(q, q_safe):
             print("[robot] WARNING: joint command clipped to limits")
             self._warned = True

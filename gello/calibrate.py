@@ -17,6 +17,7 @@ from gello.gello import detect_leader, find_port
 # Key = GELLO name in config.GELLO_CONFIG_MAP.
 CALIB_POSE_MAP = {
     "ur": (0, -90, 90, -90, -90, 0),
+    "mg400": (0, 0, 0, 0),
 }
 
 

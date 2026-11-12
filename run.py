@@ -37,10 +37,7 @@ def main() -> None:
 
     tcfg, leader, arm = build(args.robot, args.leader_port)
     try:
-        print("SAFETY: workspace clear, E-stop within reach.")
-        if input("Type START and press Enter to enable motion: ").strip() != "START":
-            print("Aborted.")
-            return
+        print("SAFETY: workspace clear, E-stop within reach. Teleop starting now; Ctrl-C stops.")
         LeaderArmBridge(tcfg, leader, arm).run(verbose=args.verbose, max_seconds=args.seconds)
     finally:
         arm.stop()

@@ -75,7 +75,7 @@ and the one plugged in is picked. With several plugged in, choose with `--leader
    ```bash
    python run.py --robot ur10 --print
    ```
-   Type `START` to enable motion. Ctrl-C stops.
+   Motion starts immediately (eased in over `blend_seconds`). Ctrl-C stops.
 
 Every command goes through `robot.robot.CriArm.command_joints`: it eases in from the robot's pose over
 `blend_seconds`, limits joint speed to `max_dq_deg_s`, and clips to the joint limits.

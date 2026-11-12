@@ -51,18 +51,18 @@ GELLO_CONFIG_MAP: Dict[str, GelloConfig] = {
         joint_signs=(1, 1, -1, 1, 1, 1),
         gripper=(7, 199.2, 148.2),
     ),
+    # 4-DoF GELLO for Dobot MG400: servos 1, 2, 3, 5 -> J1..J4; servo 4 is skipped (no MG400 joint), 6 = gripper
     "mg400": GelloConfig(
         serial="FTAAMOOQ",
-        joint_ids=(1, 2, 3, 4, 5),
+        joint_ids=(1, 2, 3, 5),
         joint_offsets=(
+            1 * np.pi / 2,
+            -1 * np.pi / 2,
             2 * np.pi / 2,
-            4 * np.pi / 2,
-            3 * np.pi / 2,
-            5 * np.pi / 2,
-            4 * np.pi / 2,
-        ),
-        joint_signs=(1, 1, -1, 1, 1),
-        gripper=(6, 199.2, 148.2),
+            1 * np.pi / 2,
+        ),     # placeholder: run python gello/calibrate.py
+        joint_signs=(1, -1, -1, -1),
+        gripper=(6, 198.5, 157.3),      # placeholder: run python gello/calibrate.py
     ),
 }
 
@@ -78,6 +78,7 @@ class TeleopConfig:
 TELEOP_CONFIG_MAP: Dict[str, TeleopConfig] = {
     "ur10": TeleopConfig(leader="ur"),
     "ur5": TeleopConfig(leader="ur"),
+    "mg400": TeleopConfig(leader="mg400"),
 }
 
 
@@ -92,16 +93,23 @@ class RobotConfig:
     tcp: Optional[Sequence[float]] = None
     home_deg: Sequence[float] = ()
 
-    joint_lower_deg: Sequence[float] = ()
-    joint_upper_deg: Sequence[float] = ()
+    joint_lower_deg: Optional[Sequence[float]] = None
+    joint_upper_deg: Optional[Sequence[float]] = None
+    """Software joint limits; None = no clipping (the robot controller enforces its own)."""
 
     max_dq_deg_s: Sequence[float] = ()
 
     blend_seconds: float = 4.0
 
     def __post_init__(self):
-        for name in ("home_deg", "joint_lower_deg", "joint_upper_deg", "max_dq_deg_s"):
+        for name in ("home_deg", "max_dq_deg_s"):
             assert len(getattr(self, name)) == self.dof, f"{name} must have {self.dof} values"
+        assert (self.joint_lower_deg is None) == (self.joint_upper_deg is None), (
+            "set both joint_lower_deg and joint_upper_deg, or neither"
+        )
+        if self.joint_lower_deg is not None:
+            for name in ("joint_lower_deg", "joint_upper_deg"):
+                assert len(getattr(self, name)) == self.dof, f"{name} must have {self.dof} values"
 
     @property
     def home(self) -> np.ndarray:
@@ -129,6 +137,28 @@ ROBOT_CONFIG_MAP: Dict[str, RobotConfig] = {
         controller_kwargs={"ip": "192.168.1.141"},
         tcp=(0, 0, 0, 0, 0, 0),
         **_UR_LIMITS,
+    ),
+
+    "mg400": RobotConfig(
+        dof=4,
+        controller="mg400",
+        # MG400 has no ServoJ: servo_joints streams short JointMovJ segments (SpeedJ/AccJ/CP in %,
+        # scaled by the global speed_factor), one every servo_period s, blended by CP.
+        # Overall speed is still capped by max_dq_deg_s below.
+        controller_kwargs={
+            "ip": "192.168.1.6",
+            "speed_factor": 50,      # global SpeedFactor %, was 7 on the pendant
+            "servo_speed": 100,
+            "servo_acc": 100,
+            "servo_cp": 100,
+            "servo_period": 0.05,    # 20 segments/s, ~1.5 deg each at 30 deg/s
+            "servo_max_lag": 10.0,   # pause adding segments if the arm falls >10 deg behind
+        },
+        stream_method="servo_joints",
+        tcp=None,                       
+        home_deg=(0, 0, 0, 0),
+        # no joint_lower_deg / joint_upper_deg: the MG400 controller enforces its own joint limits
+        max_dq_deg_s=(30, 30, 30, 60),
     ),
 }
 
